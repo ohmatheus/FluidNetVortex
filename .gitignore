@@ -47,3 +47,9 @@
 
 #PyCharm
 .idea
+
+#Claude
+.claude
+
+#data
+numpy_output/

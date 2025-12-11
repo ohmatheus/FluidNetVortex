@@ -1,0 +1,67 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    strategy:
+      fail-fast: true
+      matrix:
+        toxenv: ['qa']
+        include:
+          - toxenv: qa
+            python: 3.13
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ml
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Cache OS python libs
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip/
+          key: ${{ runner.os }}-py${{ matrix.python }}
+
+      - name: Cache tox python
+        uses: actions/cache@v4
+        with:
+          path: ml/.tox
+          key: >
+            ${{ runner.os }}-
+            tox${{ matrix.toxenv }}-
+            ${{ hashFiles(
+               'ml/uv.lock')
+            }}
+
+      - name: Install tox
+        run: python -m pip install tox
+
+      - name: Create tox directories
+        run: |
+          mkdir -p .tox/${{ matrix.toxenv }}/log
+
+      - name: Run tox with parameter
+        run: tox -e ${{ matrix.toxenv }}

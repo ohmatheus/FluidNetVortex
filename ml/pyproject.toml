@@ -1,0 +1,56 @@
+[project]
+name = "ml"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "numpy>=2.3.5",
+    "pydantic-settings>=2.12.0",
+    "pyyaml>=6.0.2",
+    "torch>=2.9.1",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.0",
+    "ruff>=0.14.8",
+    "tox>=4.32.0",
+    "types-pyyaml>=6.0.12.20250915",
+]
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "N", "I", "B", "UP", "TCH", "ANN", "PT"]
+ignore = [
+    "E501",     # covered by formatter / line length managed elsewhere
+    "ANN401",   # allow Any in some cases
+    "N806",     # ML is full of upper case names
+]
+
+[tool.mypy]
+python_version = "3.14"
+warn_return_any = true
+warn_unused_configs = true
+warn_unused_ignores = true
+check_untyped_defs = true
+files = [
+    "dataset",
+    "models",
+    "config",
+    "training",
+    "cuda_check.py",
+]
+plugins = [
+    "pydantic.mypy",
+]
+
+[[tool.mypy.overrides]]
+module = "numpy.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "torch.*"
+ignore_missing_imports = true

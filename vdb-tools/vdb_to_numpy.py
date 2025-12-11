@@ -3,6 +3,9 @@ import numpy as np
 import os
 import glob
 import argparse
+from scipy.ndimage import zoom
+import re
+from scipy.ndimage import zoom
 
 
 def extract_frame_number(vdb_path):
@@ -18,7 +21,7 @@ def extract_frame_number(vdb_path):
 
 
 def get_grid_names(vdb_path):
-    target_grids = ['density', 'velocity']
+    target_grids = ['density', 'velocity'] #add later here collision mask, etc
     available_grids = []
 
     for grid_name in target_grids:
@@ -31,9 +34,10 @@ def get_grid_names(vdb_path):
     return available_grids
 
 
-def extract_velocity_components_avg(grid, target_resolution=32):
+def extract_velocity_components_avg(grid, target_resolution):
     """
-    Extract both X and Z velocity components by averaging across Y layers
+    Extract both X and Z velocity components by averaging across Y layers.
+    Pads active voxel region to full domain (target_resolution x target_resolution) before resizing.
     """
     print(f"    Processing velocity grid (type: {type(grid)})")
 
@@ -51,12 +55,12 @@ def extract_velocity_components_avg(grid, target_resolution=32):
             dim_y = max_y - min_y + 1
             dim_z = max_z - min_z + 1
 
-            print(f"    Averaging across {dim_y} Y layers, dimensions: {dim_x}x{dim_z}")
+            print(f"    Averaging across {dim_y} Y layers, dimensions (X,Z): {dim_x}x{dim_z}")
 
-            # Create output arrays for both X and Z components
-            vel_x_sum = np.zeros((dim_x, dim_z), dtype=np.float32)
-            vel_z_sum = np.zeros((dim_x, dim_z), dtype=np.float32)
-            count_array = np.zeros((dim_x, dim_z), dtype=np.int32)
+            # IMPORTANT: store arrays as (Z, X) so that rows correspond to Z (vertical) and columns to X (horizontal)
+            vel_x_sum = np.zeros((dim_z, dim_x), dtype=np.float32)
+            vel_z_sum = np.zeros((dim_z, dim_x), dtype=np.float32)
+            count_array = np.zeros((dim_z, dim_x), dtype=np.int32)
 
             accessor = grid.getAccessor()
             valid_samples = 0
@@ -77,9 +81,10 @@ def extract_velocity_components_avg(grid, target_resolution=32):
 
                             # Extract X and Z components from 3D velocity vector
                             if hasattr(velocity_vec, '__len__') and len(velocity_vec) >= 3:
-                                vel_x_sum[i, j] += float(velocity_vec[0])  # X component
-                                vel_z_sum[i, j] += float(velocity_vec[2])  # Z component
-                                count_array[i, j] += 1
+                                # write into (Z, X) grid => index [j, i]
+                                vel_x_sum[j, i] += float(velocity_vec[0])  # X component
+                                vel_z_sum[j, i] += float(velocity_vec[2])  # Z component
+                                count_array[j, i] += 1
 
                                 if velocity_vec[0] != 0.0 or velocity_vec[2] != 0.0:
                                     valid_samples += 1
@@ -93,33 +98,53 @@ def extract_velocity_components_avg(grid, target_resolution=32):
 
             print(f"    Valid velocity samples: {valid_samples}")
 
-            # Resize to target resolution
+            # Pad to full domain size to preserve spatial relationships
+            # Calculate padding to restore full domain coordinates
+            # Arrays are (Z, X) format
+            pad_x_before = max(0, min_x - 1)
+            pad_x_after = max(0, target_resolution - max_x)
+            pad_z_before = max(0, min_z - 1)
+            pad_z_after = max(0, target_resolution - max_z)
+
+            if pad_x_before > 0 or pad_x_after > 0 or pad_z_before > 0 or pad_z_after > 0:
+                print(f"    Padding to domain size {target_resolution}: X[{pad_x_before}, {pad_x_after}], Z[{pad_z_before}, {pad_z_after}]")
+                vel_x_data = np.pad(vel_x_data,
+                                  ((pad_z_before, pad_z_after),
+                                   (pad_x_before, pad_x_after)),
+                                  mode='constant', constant_values=0)
+                vel_z_data = np.pad(vel_z_data,
+                                  ((pad_z_before, pad_z_after),
+                                   (pad_x_before, pad_x_after)),
+                                  mode='constant', constant_values=0)
+                print(f"    Padded shape: {vel_x_data.shape}")
+
+            # After padding, shape should already match target_resolution
+            # Only resize if there's a mismatch (shouldn't happen normally)
             if (vel_x_data.shape[0] != target_resolution or vel_x_data.shape[1] != target_resolution):
-                from scipy.ndimage import zoom
-                zoom_x = target_resolution / vel_x_data.shape[0]
-                zoom_z = target_resolution / vel_x_data.shape[1]
+                print(f"    Warning: Unexpected shape {vel_x_data.shape}, resizing to {target_resolution}")
+                zoom_z = target_resolution / vel_x_data.shape[0]
+                zoom_x = target_resolution / vel_x_data.shape[1]
 
-                vel_x_data = zoom(vel_x_data, (zoom_x, zoom_z), order=1)
-                vel_z_data = zoom(vel_z_data, (zoom_x, zoom_z), order=1)
+                vel_x_data = zoom(vel_x_data, (zoom_z, zoom_x), order=1)
+                vel_z_data = zoom(vel_z_data, (zoom_z, zoom_x), order=1)
 
-            print(f"    Vel X range: [{vel_x_data.min():.6f}, {vel_x_data.max():.6f}]")
-            print(f"    Vel Z range: [{vel_z_data.min():.6f}, {vel_z_data.max():.6f}]")
-
-            return {'vel_x': vel_x_data, 'vel_z': vel_z_data}
+            # Use keys compatible with the ML dataset (velx/velz)
+            return {'velx': vel_x_data, 'velz': vel_z_data}
 
         else:
-            return {'vel_x': np.zeros((target_resolution, target_resolution), dtype=np.float32),
-                    'vel_z': np.zeros((target_resolution, target_resolution), dtype=np.float32)}
+            return {'velx': np.zeros((target_resolution, target_resolution), dtype=np.float32),
+                    'velz': np.zeros((target_resolution, target_resolution), dtype=np.float32)}
 
     except Exception as e:
         print(f"    Error extracting velocity: {e}")
-        return {'vel_x': np.zeros((target_resolution, target_resolution), dtype=np.float32),
-                'vel_z': np.zeros((target_resolution, target_resolution), dtype=np.float32)}
+        return {'velx': np.zeros((target_resolution, target_resolution), dtype=np.float32),
+                'velz': np.zeros((target_resolution, target_resolution), dtype=np.float32)}
 
 
-def extract_density_field_sum(grid, target_resolution=32):
+def extract_density_field_sum(grid, target_resolution):
     """
-    Extract density field by summing across Y layers
+    Extract density field by summing across Y layers.
+    Pads active voxel region to full domain (target_resolution x target_resolution) before resizing.
     """
     print(f"    Processing density grid (type: {type(grid)})")
 
@@ -137,9 +162,10 @@ def extract_density_field_sum(grid, target_resolution=32):
             dim_y = max_y - min_y + 1
             dim_z = max_z - min_z + 1
 
-            print(f"    Summing across {dim_y} Y layers, dimensions: {dim_x}x{dim_z}")
+            print(f"    Summing across {dim_y} Y layers, dimensions (X,Z): {dim_x}x{dim_z}")
 
-            density_data = np.zeros((dim_x, dim_z), dtype=np.float32)
+            # Store as (Z, X) so rows=Z, cols=X
+            density_data = np.zeros((dim_z, dim_x), dtype=np.float32)
             accessor = grid.getAccessor()
             valid_samples = 0
 
@@ -157,7 +183,7 @@ def extract_density_field_sum(grid, target_resolution=32):
                                 except:
                                     continue
 
-                            density_data[i, j] += float(density_val)
+                            density_data[j, i] += float(density_val)
 
                             if density_val > 0.0:
                                 valid_samples += 1
@@ -167,12 +193,29 @@ def extract_density_field_sum(grid, target_resolution=32):
 
             print(f"    Valid density samples: {valid_samples}")
 
-            # Resize to target resolution
+            # Pad to full domain size to preserve spatial relationships
+            # Calculate padding to restore full domain coordinates
+            # Arrays are (Z, X) format
+            pad_x_before = max(0, min_x - 1)
+            pad_x_after = max(0, target_resolution - max_x)
+            pad_z_before = max(0, min_z - 1)
+            pad_z_after = max(0, target_resolution - max_z)
+
+            if pad_x_before > 0 or pad_x_after > 0 or pad_z_before > 0 or pad_z_after > 0:
+                print(f"    Padding to domain size {target_resolution}: X[{pad_x_before}, {pad_x_after}], Z[{pad_z_before}, {pad_z_after}]")
+                density_data = np.pad(density_data,
+                                    ((pad_z_before, pad_z_after),
+                                     (pad_x_before, pad_x_after)),
+                                    mode='constant', constant_values=0)
+                print(f"    Padded shape: {density_data.shape}")
+
+            # After padding, shape should already match target_resolution
+            # Only resize if there's a mismatch (shouldn't happen normally)
             if (density_data.shape[0] != target_resolution or density_data.shape[1] != target_resolution):
-                from scipy.ndimage import zoom
-                zoom_x = target_resolution / density_data.shape[0]
-                zoom_z = target_resolution / density_data.shape[1]
-                density_data = zoom(density_data, (zoom_x, zoom_z), order=1)
+                print(f"    Warning: Unexpected shape {density_data.shape}, resizing to {target_resolution}")
+                zoom_z = target_resolution / density_data.shape[0]
+                zoom_x = target_resolution / density_data.shape[1]
+                density_data = zoom(density_data, (zoom_z, zoom_x), order=1)
 
             print(f"    Density range: [{density_data.min():.6f}, {density_data.max():.6f}]")
 
@@ -186,8 +229,10 @@ def extract_density_field_sum(grid, target_resolution=32):
         return np.zeros((target_resolution, target_resolution), dtype=np.float32)
 
 
-def process_vdb_file(vdb_path, output_dir, target_resolution=32):
-    """Process single VDB file - sum density, average velocity across Y"""
+def process_vdb_file(vdb_path, output_dir, target_resolution=32, save_frames=False,
+                     axis_order: str = 'XZ', flip_x: bool = True, flip_z: bool = False):
+    """Process single VDB file - sum density, average velocity across Y.
+    """
 
     print(f"\nProcessing: {os.path.basename(vdb_path)}")
 
@@ -211,22 +256,59 @@ def process_vdb_file(vdb_path, output_dir, target_resolution=32):
 
                 if grid_name == 'density':
                     density = extract_density_field_sum(grid, target_resolution)
+                    # Blender extraction returns (Z, X)
+                    if axis_order.upper() == 'XZ':
+                        density = np.swapaxes(density, 0, 1)  # (X, Z)
+                    elif axis_order.upper() == 'ZX':
+                        pass
+                    else:
+                        raise ValueError("axis_order must be 'XZ' or 'ZX'")
+                    
+                    # Apply flips in the chosen axis order: axis 0 is first letter, axis 1 is second.
+                    if flip_x:
+                        density = np.flip(density, axis=0)
+                    if flip_z:
+                        density = np.flip(density, axis=1)
+                        
                     frame_data['density'] = density
-
-                    # Save density
-                    output_path = os.path.join(output_dir, f"density_{frame_num:04d}.npy")
-                    np.save(output_path, density)
-                    print(f"    Saved: density_{frame_num:04d}.npy")
+                    if save_frames:
+                        # Save density frame as .npy when requested
+                        output_path = os.path.join(output_dir, f"density_{frame_num:04d}.npy")
+                        np.save(output_path, density)
+                        print(f"    Saved: density_{frame_num:04d}.npy")
 
                 elif grid_name == 'velocity':
                     velocity_components = extract_velocity_components_avg(grid, target_resolution)
-                    frame_data.update(velocity_components)
+                    # Reorder and flip each component the same way as density
+                    # IMPORTANT: When flipping axes, velocity components must be negated for physical correctness
+                    for key in ('velx', 'velz'):
+                        if key in velocity_components:
+                            arr = velocity_components[key]
+                            if axis_order.upper() == 'XZ':
+                                arr = np.swapaxes(arr, 0, 1)  # (X, Z)
+                            elif axis_order.upper() == 'ZX':
+                                pass
+                            else:
+                                raise ValueError("axis_order must be 'XZ' or 'ZX'")
 
-                    # Save velocity components
-                    for comp_name, comp_data in velocity_components.items():
-                        output_path = os.path.join(output_dir, f"{comp_name}_{frame_num:04d}.npy")
-                        np.save(output_path, comp_data)
-                        print(f"    Saved: {comp_name}_{frame_num:04d}.npy")
+                            # Apply spatial flips and negate component signs for physical correctness
+                            if flip_x:
+                                arr = np.flip(arr, axis=0)
+                                if key == 'velx':  # Flipping X-axis: negate X-velocity component
+                                    arr = -arr
+                            if flip_z:
+                                arr = np.flip(arr, axis=1)
+                                if key == 'velz':  # Flipping Z-axis: negate Z-velocity component
+                                    arr = -arr
+
+                            velocity_components[key] = arr
+                    frame_data.update(velocity_components)
+                    if save_frames:
+                        # Save velocity components as .npy when requested
+                        for comp_name, comp_data in velocity_components.items():
+                            output_path = os.path.join(output_dir, f"{comp_name}_{frame_num:04d}.npy")
+                            np.save(output_path, comp_data)
+                            print(f"    Saved: {comp_name}_{frame_num:04d}.npy")
 
             except Exception as e:
                 print(f"    Error processing '{grid_name}': {e}")
@@ -238,8 +320,10 @@ def process_vdb_file(vdb_path, output_dir, target_resolution=32):
         return {}
 
 
-def process_all_frames(cache_dir, output_dir, target_resolution=32, max_frames=None):
-    """Process all VDB files in directory"""
+def process_all_frames(cache_dir, output_dir, target_resolution, max_frames=None, save_frames=False):
+    """
+    Process all VDB files in directory and directly pack non-overlapping sequences into seq_*.npz.
+    """
 
     vdb_files = sorted(glob.glob(os.path.join(cache_dir, "*.vdb")))
 
@@ -250,6 +334,12 @@ def process_all_frames(cache_dir, output_dir, target_resolution=32, max_frames=N
     print(f"Found {len(vdb_files)} VDB files")
     print(f"Target resolution: {target_resolution}x{target_resolution}")
     print(f"Processing: DENSITY (sum across Y), VELOCITY (average across Y)")
+    # Deduce sequence length if not provided: use number of files that look like 'fluid_data_0001.vdb'
+    pat = re.compile(r"^fluid_data_\d{4,}\.vdb$")
+    candidate_files = [f for f in vdb_files if pat.match(os.path.basename(f))]
+    deduced = len(candidate_files) if candidate_files else len(vdb_files)
+    seq_len = deduced
+    print(f"Deduced sequence length: {seq_len} (from folder contents)")
 
     if max_frames:
         vdb_files = vdb_files[:max_frames]
@@ -257,65 +347,84 @@ def process_all_frames(cache_dir, output_dir, target_resolution=32, max_frames=N
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Install scipy if needed
-    try:
-        from scipy.ndimage import zoom
-    except ImportError:
-        print("Installing scipy...")
-        os.system("pip install scipy")
-
     # Process files
     successful = 0
     total_nonzero_files = 0
 
+    density_frames = []  # List[np.ndarray]
+    velx_frames = []
+    velz_frames = []
+    hw_ref = None
+
     for i, vdb_file in enumerate(vdb_files):
-        frame_data = process_vdb_file(vdb_file, output_dir, target_resolution=target_resolution)
+        frame_data = process_vdb_file(vdb_file, output_dir, axis_order="ZX", target_resolution=target_resolution, save_frames=save_frames, flip_z=True)
         if frame_data:
             successful += 1
-            # Check if we got actual data
-            has_nonzero_data = any(np.any(data != 0) for data in frame_data.values())
-            if has_nonzero_data:
-                total_nonzero_files += 1
+            # Only accept frames that have all required fields
+            if all(k in frame_data for k in ('density', 'velx', 'velz')):
+                d = frame_data['density'].astype(np.float32, copy=False)
+                vx = frame_data['velx'].astype(np.float32, copy=False)
+                vz = frame_data['velz'].astype(np.float32, copy=False)
 
-        # Progress update
-        if (i + 1) % 10 == 0:
-            print(f"\nProgress: {i + 1}/{len(vdb_files)} files processed")
+                if hw_ref is None:
+                    hw_ref = d.shape
+                if d.shape != hw_ref or vx.shape != hw_ref or vz.shape != hw_ref:
+                    print(f"    Warning: skipping frame due to shape mismatch. Expected {hw_ref}, got d={d.shape}, vx={vx.shape}, vz={vz.shape}")
+                else:
+                    density_frames.append(d)
+                    velx_frames.append(vx)
+                    velz_frames.append(vz)
+
+                # Check if we got actual data
+                has_nonzero_data = np.any(d != 0) or np.any(vx != 0) or np.any(vz != 0)
+                if has_nonzero_data:
+                    total_nonzero_files += 1
+            else:
+                print("    Warning: missing one of required grids (density/velocity); frame will not be included in sequences.")
+
+    # Report per-frame processing
+    print(f"\n=== Per-frame extraction complete ===")
+    print(f"Successfully processed: {successful}/{len(vdb_files)} files")
+    print(f"Frames with non-zero data (accepted): {total_nonzero_files}")
+    print(f"Accepted frames with all fields: {len(density_frames)}")
+
+    # Pack into non-overlapping sequences and save npz
+    N = len(density_frames)
+    if N < seq_len:
+        print(f"Not enough frames to create a single sequence (have {N}, need {seq_len}). No seq_*.npz written.")
+        return
+
+    T = seq_len
+    H, W = hw_ref if hw_ref is not None else (target_resolution, target_resolution)
+    n_seqs = N // seq_len
+    print(f"Packing {N} frames into {n_seqs} non-overlapping sequences of length {seq_len}.")
+
+    for s in range(n_seqs):
+        start = s * seq_len
+        end = start + seq_len
+        d_stack = np.stack(density_frames[start:end], axis=0).astype(np.float32, copy=False)
+        x_stack = np.stack(velx_frames[start:end], axis=0).astype(np.float32, copy=False)
+        z_stack = np.stack(velz_frames[start:end], axis=0).astype(np.float32, copy=False)
+
+        out_name = f"seq_{s:04d}.npz"
+        out_path = os.path.join(output_dir, out_name)
+        np.savez_compressed(out_path, density=d_stack, velx=x_stack, velz=z_stack)
+        print(f"Saved {out_path}  shape: T={T}, H={H}, W={W}")
 
     print(f"\n=== Complete ===")
-    print(f"Successfully processed: {successful}/{len(vdb_files)} files")
-    print(f"Files with non-zero data: {total_nonzero_files}")
-
-    # Show results
-    output_files = sorted(glob.glob(os.path.join(output_dir, "*.npy")))
-    print(f"Generated {len(output_files)} numpy files")
-
-    # Group by type and show summary
-    density_files = [f for f in output_files if 'density' in f]
-    vel_x_files = [f for f in output_files if 'vel_x' in f]
-    vel_z_files = [f for f in output_files if 'vel_z' in f]
-
-    print(f"  density: {len(density_files)} files")
-    print(f"  vel_x: {len(vel_x_files)} files")
-    print(f"  vel_z: {len(vel_z_files)} files")
-
-    # Sample some files to verify
-    print("\nSample verification:")
-    for file_type, files in [('density', density_files[:3]), ('vel_x', vel_x_files[:3]), ('vel_z', vel_z_files[:3])]:
-        for f in files:
-            data = np.load(f)
-            basename = os.path.basename(f)
-            nonzero_count = np.count_nonzero(data)
-            print(f"  {basename}: {data.shape}, range=[{data.min():.6f}, {data.max():.6f}], nonzero={nonzero_count}")
+    print(f"Generated {n_seqs} sequence files (seq_*.npz) in {output_dir}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Convert VDB fluid cache to NumPy arrays (sum density, avg velocity)')
+    parser = argparse.ArgumentParser(description='Convert VDB fluid cache directly into seq_*.npz sequences (sum density, avg velocity across Y).')
     parser.add_argument('cache_dir', help='Directory containing VDB files')
-    parser.add_argument('output_dir', help='Output directory for NumPy files')
-    parser.add_argument('-r', '--resolution', type=int, default=32, 
+    parser.add_argument('output_dir', help='Output directory for seq_*.npz files')
+    parser.add_argument('-r', '--resolution', type=int, default=32,
                         help='Target resolution (square, e.g., 32 for 32x32)')
     parser.add_argument('--max-frames', type=int, default=None,
                         help='Maximum number of frames to process (for testing)')
+    parser.add_argument('--save-frames', action='store_true',
+                        help='Also save per-frame .npy files for debugging (density_####.npy, velx_####.npy, velz_####.npy)')
 
     args = parser.parse_args()
 
@@ -334,27 +443,10 @@ def main():
         cache_dir=cache_dir,
         output_dir=output_dir,
         target_resolution=args.resolution,
-        max_frames=args.max_frames
+        max_frames=args.max_frames,
+        save_frames=args.save_frames,
     )
 
 
 if __name__ == "__main__":
-    if len(os.sys.argv) == 1:
-        # Default mode
-        cache_dir = "/home/ohmatheus/Projects/Blender/cache2/data/"
-        output_dir = "./numpy_output"
-        target_resolution = 32
-
-        print("No arguments provided, using defaults:")
-        print(f"  Cache: {cache_dir}")
-        print(f"  Output: {output_dir}")
-        print(f"  Resolution: {target_resolution}x{target_resolution}")
-        print("  Method: SUM density, AVERAGE velocity across Y layers")
-
-        if os.path.exists(cache_dir):
-            process_all_frames(cache_dir, output_dir, target_resolution=target_resolution)
-        else:
-            print(f"Error: Default cache directory not found: {cache_dir}")
-            print("Usage: python vdb_to_numpy_updated.py <cache_dir> <output_dir> [-r resolution]")
-    else:
-        main()
+    main()

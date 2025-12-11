@@ -1,10 +1,8 @@
 import argparse
 import os
-from typing import List
 
 import numpy as np
 from PIL import Image
-
 
 # Available fields that can be rendered from NPZ files
 AVAILABLE_FIELDS = ["density", "velx", "velz", "vel_magnitude"]
@@ -29,8 +27,9 @@ def _save_png(array2d: np.ndarray, path: str) -> None:
     Image.fromarray(u8, mode="L").save(path)
 
 
-def render_npz_field(npz_path: str, out_dir: str, field: str = "density",
-                     prefix: str = None, scale: int = 4) -> int:
+def render_npz_field(
+    npz_path: str, out_dir: str, field: str = "density", prefix: str | None = None, scale: int = 4
+) -> int:
     """
     Render a field from NPZ file to PNG images.
     """
@@ -54,7 +53,7 @@ def render_npz_field(npz_path: str, out_dir: str, field: str = "density",
         if field_data.ndim != 3:
             raise ValueError(f"Expected {field} to be (T,H,W), got {field_data.shape} in {npz_path}")
 
-    T = field_data.shape[0]
+    T: int = int(field_data.shape[0])
     seq_name = prefix if prefix is not None else os.path.splitext(os.path.basename(npz_path))[0]
 
     # Create nested directory structure: seq_name/field_name/
@@ -78,9 +77,9 @@ def render_npz_field(npz_path: str, out_dir: str, field: str = "density",
         if scale and scale != 1:
             try:
                 # Pillow >= 10 uses Image.Resampling
-                resample = getattr(Image, "Resampling", Image).BILINEAR
+                resample = Image.Resampling.BILINEAR  # getattr(Image, "Resampling", Image).BILINEAR
             except Exception:
-                resample = Image.BILINEAR
+                resample = Image.Resampling.BILINEAR
             w, h = img.size
             img = img.resize((w * scale, h * scale), resample=resample)
             img.save(fpath)
@@ -91,7 +90,7 @@ def render_npz_field(npz_path: str, out_dir: str, field: str = "density",
     return T
 
 
-def render_npz_all_fields(npz_path: str, out_dir: str, prefix: str = None, scale: int = 4) -> dict:
+def render_npz_all_fields(npz_path: str, out_dir: str, prefix: str | None = None, scale: int = 4) -> dict[str, int]:
     """
     Render all available fields from NPZ file to PNG images.
     """
@@ -107,26 +106,29 @@ def render_npz_all_fields(npz_path: str, out_dir: str, prefix: str = None, scale
     return results
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Render fields from seq_*.npz to PNG images (grayscale)")
     parser.add_argument("input", type=str, help="Path to a seq_*.npz file or a directory containing them")
     parser.add_argument("output", type=str, help="Directory to write images")
-    parser.add_argument("--field", type=str, default="density",
-                        choices=AVAILABLE_FIELDS + ["all"],
-                        help=f"Field to render: {', '.join(AVAILABLE_FIELDS)}, or 'all' (default: density)")
+    parser.add_argument(
+        "--field",
+        type=str,
+        default="density",
+        choices=AVAILABLE_FIELDS + ["all"],
+        help=f"Field to render: {', '.join(AVAILABLE_FIELDS)}, or 'all' (default: density)",
+    )
     parser.add_argument("--scale", type=int, default=4, help="Upscale factor for output images (default: 4)")
     args = parser.parse_args()
 
     _ensure_dir(args.output)
 
     processed = 0
-    render_all = (args.field == "all")
+    render_all = args.field == "all"
 
     if os.path.isdir(args.input):
-        files: List[str] = sorted([
-            os.path.join(args.input, f) for f in os.listdir(args.input)
-            if f.startswith("seq_") and f.endswith(".npz")
-        ])
+        files: list[str] = sorted(
+            [os.path.join(args.input, f) for f in os.listdir(args.input) if f.startswith("seq_") and f.endswith(".npz")]
+        )
         if not files:
             raise FileNotFoundError(f"No seq_*.npz found in {args.input}")
         for fp in files:

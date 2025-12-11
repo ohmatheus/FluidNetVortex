@@ -1,10 +1,7 @@
-from config.config import ml_config
-from config.config import project_config
-
 import torch
 
 
-def main():
+def main() -> None:
     cuda_available = torch.cuda.is_available()
     print(f"CUDA available: {cuda_available}")
 

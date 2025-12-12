@@ -1,7 +1,8 @@
+from pathlib import Path
+
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from pathlib import Path
 
 
 class FluidNPZSequenceDataset(Dataset):
@@ -16,7 +17,7 @@ class FluidNPZSequenceDataset(Dataset):
       target: (3, H, W) = [density_{t+1}, velx_{t+1}, velz_{t+1}]
     """
 
-    def __init__(self, npz_dir: str | Path, normalize: bool = False, device: torch.device | None = None) -> None:
+    def __init__(self, npz_dir: str | Path, normalize: bool = False, device: str = "cpu") -> None:
         self.npz_dir = npz_dir
         self.normalize = normalize
         self.device = torch.device(device) if device is not None else None
@@ -45,7 +46,9 @@ class FluidNPZSequenceDataset(Dataset):
 
                 T = d.shape[0]
                 if T < 3:
-                    raise ValueError(f"Animation is less than 3 frames, not enough to form samples. {path}: d={d.shape}, vx={vx.shape}, vz={vz.shape}")
+                    raise ValueError(
+                        f"Animation is less than 3 frames, not enough to form samples. {path}: d={d.shape}, vx={vx.shape}, vz={vz.shape}"
+                    )
 
                 # Indices t in [1, T-2]
                 for t in range(1, T - 1):
